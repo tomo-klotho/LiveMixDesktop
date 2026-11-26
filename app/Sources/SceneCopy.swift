@@ -42,7 +42,7 @@ struct SceneTemplate: Identifiable {
 }
 
 enum TemplateStore {
-    static let file = URL(fileURLWithPath: NSHomeDirectory() + "/.config/livemixdesktop/scene-templates.json")
+    static let file = AppFiles.url("scene-templates.json")
 
     static func load() -> [SceneTemplate] {
         guard let d = try? Data(contentsOf: file),
@@ -56,8 +56,7 @@ enum TemplateStore {
     static func save(_ list: [SceneTemplate]) throws {
         let arr = list.map { ["id": $0.id.uuidString, "name": $0.name, "created": $0.created.timeIntervalSince1970, "content": $0.content.json] as [String: Any] }
         let d = try JSONSerialization.data(withJSONObject: arr, options: [.prettyPrinted, .sortedKeys])
-        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try d.write(to: file, options: .atomic)
+        try AppFiles.write(d, to: file)
     }
 }
 

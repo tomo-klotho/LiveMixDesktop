@@ -11,10 +11,12 @@ struct LayoutWindow: Identifiable, Equatable {
     var raw: [String: Any]  // 本体が返した他の項目 (type, renderMode, srcMap など) をそのまま保つ
     var border: WinBorder?  // 枠線 (クロマキーとは併用不可)
     var key: ChromaKey?     // クロマキー (指定色を透明に。一番奥のウインドウだけ)
+    /// 切り出し範囲 (srcMap): 入力映像のどこを使うか。入力に対する比率 (0〜1)。既定は全体
+    var crop = CGRect(x: 0, y: 0, width: 1, height: 1)
 
     static func == (a: LayoutWindow, b: LayoutWindow) -> Bool {
         a.id == b.id && a.src == b.src && a.alt == b.alt && a.x == b.x && a.y == b.y && a.w == b.w && a.h == b.h && a.z == b.z &&
-        a.border == b.border && a.key == b.key
+        a.border == b.border && a.key == b.key && a.crop == b.crop
     }
 
     init(src: Int, alt: Bool, x: Double, y: Double, w: Double, h: Double, z: Double) {
@@ -33,6 +35,10 @@ struct LayoutWindow: Identifiable, Equatable {
         raw = d
         border = (d["border"] as? [String: Any]).flatMap(WinBorder.init)
         key = (d["transparency"] as? [String: Any]).flatMap(ChromaKey.init)
+        if let m = d["srcMap"] as? [String: Any] {
+            crop = CGRect(x: m["x_ratio"] as? Double ?? 0, y: m["y_ratio"] as? Double ?? 0,
+                          width: m["w_ratio"] as? Double ?? 1, height: m["h_ratio"] as? Double ?? 1)
+        }
     }
 
     var json: [String: Any] {
@@ -40,7 +46,9 @@ struct LayoutWindow: Identifiable, Equatable {
         d["srcId"] = src
         d["altPort"] = alt
         d["location"] = ["x_ratio": x, "y_ratio": y, "w_ratio": w, "h_ratio": h, "z_order": z]
-        if d["srcMap"] == nil { d["srcMap"] = ["x_ratio": 0.0, "y_ratio": 0.0, "w_ratio": 1.0, "h_ratio": 1.0] }
+        var m = d["srcMap"] as? [String: Any] ?? [:]   // 知らないキーは残す
+        m["x_ratio"] = crop.minX; m["y_ratio"] = crop.minY; m["w_ratio"] = crop.width; m["h_ratio"] = crop.height
+        d["srcMap"] = m
         if d["type"] == nil { d["type"] = "HDMI1" }
         if d["renderMode"] == nil { d["renderMode"] = "manual" }
         if let k = key { d["transparency"] = k.json; d["border"] = nil }
@@ -960,7 +968,13 @@ struct LayoutCanvas: View {
         let isSel = ed.selected == win.id
         ZStack {
             if let img = thumb(win.sourceKey) {
+                // 切り出し範囲だけを枠いっぱいに見せる
+                let fw = max(win.w * W, 8), fh = max(win.h * H, 8), c = win.crop
                 Image(nsImage: img).resizable()
+                    .frame(width: fw / max(c.width, 0.01), height: fh / max(c.height, 0.01))
+                    .offset(x: -c.minX * fw / max(c.width, 0.01), y: -c.minY * fh / max(c.height, 0.01))
+                    .frame(width: fw, height: fh, alignment: .topLeading)
+                    .clipped()
             } else {
                 Color.gray.opacity(0.5)
             }
@@ -1335,6 +1349,8 @@ struct WindowInspector: View {
                            in: 0.002...0.03).controlSize(.mini)
                 }
             }
+            Divider()
+            cropSection
             // クロマキー (transparency) は本体に保存はできるが、fw V1.4.136 では映像に効かない (2026-11-25 実機確認)。
             // そのため設定欄は出さない。本体に既にある値は LayoutWindow.key として読み書きで保つ
         }
@@ -1342,6 +1358,53 @@ struct WindowInspector: View {
 
     private func slider(_ label: String, _ v: Binding<Double>, _ range: ClosedRange<Double>) -> some View {
         RatioRow(label: label, value: v, range: range, full: label == "左" || label == "幅" ? 1920 : 1080)
+    }
+
+    // MARK: 切り出し (srcMap)。入力映像の上下左右を削り、残りを枠いっぱいに表示する
+    private static let minCrop = 0.05
+    private var cropSection: some View {
+        let c = win.crop
+        let left = Binding<Double>(get: { win.crop.minX }, set: { v in
+            let r = 1 - win.crop.maxX; win.crop.origin.x = v; win.crop.size.width = 1 - v - r })
+        let right = Binding<Double>(get: { 1 - win.crop.maxX }, set: { v in
+            win.crop.size.width = 1 - win.crop.minX - v })
+        let top = Binding<Double>(get: { win.crop.minY }, set: { v in
+            let b = 1 - win.crop.maxY; win.crop.origin.y = v; win.crop.size.height = 1 - v - b })
+        let bottom = Binding<Double>(get: { 1 - win.crop.maxY }, set: { v in
+            win.crop.size.height = 1 - win.crop.minY - v })
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text("切り出し").font(.caption.bold())
+                Text("入力映像の端を削る").font(.caption2).foregroundStyle(.secondary)
+                Spacer()
+                Button("元に戻す") { win.crop = CGRect(x: 0, y: 0, width: 1, height: 1) }
+                    .controlSize(.mini).disabled(c == CGRect(x: 0, y: 0, width: 1, height: 1))
+            }
+            RatioRow(label: "左", value: left, range: 0...max(0, 1 - Self.minCrop - (1 - c.maxX)), full: 1920)
+            RatioRow(label: "右", value: right, range: 0...max(0, 1 - Self.minCrop - c.minX), full: 1920)
+            RatioRow(label: "上", value: top, range: 0...max(0, 1 - Self.minCrop - (1 - c.maxY)), full: 1080)
+            RatioRow(label: "下", value: bottom, range: 0...max(0, 1 - Self.minCrop - c.minY), full: 1080)
+            HStack {
+                Button("枠の比率に合わせる") { fitCropToFrame() }.controlSize(.mini)
+                    .help("映像が縦横に伸び縮みしないよう、枠と同じ比率になるまで切り出し範囲を中央に向けて狭める")
+                Spacer()
+            }
+        }
+    }
+
+    /// 枠 (出力上の w×h) と切り出し範囲の比率をそろえる。切り出し範囲の中心は保つ
+    private func fitCropToFrame() {
+        let frameAspect = (win.w * 1920) / max(win.h * 1080, 1)
+        var c = win.crop
+        let cropAspect = (c.width * 1920) / max(c.height * 1080, 1)
+        if cropAspect > frameAspect {
+            let nw = c.height * 1080 * frameAspect / 1920
+            c.origin.x += (c.width - nw) / 2; c.size.width = nw
+        } else {
+            let nh = c.width * 1920 / frameAspect / 1080
+            c.origin.y += (c.height - nh) / 2; c.size.height = nh
+        }
+        win.crop = c
     }
 }
 

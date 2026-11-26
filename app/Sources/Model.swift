@@ -53,6 +53,7 @@ final class MixerModel: ObservableObject {
     private(set) var socket: SocketClient!
 
     init() {
+        try? AppFiles.makeDir(AppFiles.dir)   // 古い版が作ったフォルダも本人だけの権限に
         log("launch host=\(MixerAPI.host) cliCookie=\(api.sessionId != nil)")
         monitor = MonitorController(api: api) { [weak self] in self?.log($0) }
         editor = SceneEditorModel(model: self)
@@ -91,9 +92,9 @@ final class MixerModel: ObservableObject {
     /// ~/.config/livemixdesktop/app.log に状態変化を記録 (パスワードやクッキーは書かない)
     func log(_ s: String) {
         let line = "\(ISO8601DateFormatter().string(from: Date())) \(s)\n"
-        let url = URL(fileURLWithPath: NSHomeDirectory() + "/.config/livemixdesktop/app.log")
+        let url = AppFiles.url("app.log")
         if let h = try? FileHandle(forWritingTo: url) { h.seekToEndOfFile(); h.write(Data(line.utf8)); try? h.close() }
-        else { try? line.write(to: url, atomically: true, encoding: .utf8) }
+        else { try? AppFiles.write(Data(line.utf8), to: url) }
     }
     @Published var deviceName = "GV-LSMIXER/I"
     @Published var prv = 0

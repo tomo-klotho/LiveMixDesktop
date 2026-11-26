@@ -34,14 +34,9 @@ enum AppSection: String, CaseIterable, Identifiable {
         case .settings: return "本体の全設定を見る (変更なし)"
         }
     }
-    /// 起動時に開く画面 (テスト用: LMD_SECTION=scenes など。旧 LMD_SCENES=1 なども受ける)
+    /// 起動時に開く画面 (LMD_SECTION=scenes など。既定は本番)
     static var initial: AppSection {
-        let env = ProcessInfo.processInfo.environment
-        if let s = env["LMD_SECTION"].flatMap(AppSection.init(rawValue:)) { return s }
-        let legacy: [(String, AppSection)] = [("LMD_SCENES", .scenes), ("LMD_BROADCAST", .broadcast), ("LMD_ASSETS", .assets),
-                                              ("LMD_DEVICE", .device), ("LMD_SETTINGS", .settings), ("LMD_LIVE", .live)]
-        for (k, s) in legacy where env[k] == "1" { return s }
-        return .live
+        ProcessInfo.processInfo.environment["LMD_SECTION"].flatMap(AppSection.init(rawValue:)) ?? .live
     }
 }
 

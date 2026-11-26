@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// 本体の管理 (フェーズ4): プロファイルの書き出し/読み込み、日時、LAN・DNS、工場出荷リセット
+/// 本体の管理: プロファイルの書き出し/読み込み、日時、LAN・DNS、工場出荷リセット
 @MainActor
 final class DeviceAdminModel: ObservableObject {
     // プロファイル
@@ -40,7 +40,7 @@ final class DeviceAdminModel: ObservableObject {
     @Published var showReset = false
     @Published var resetWord = ""
 
-    static let backupDir = URL(fileURLWithPath: NSHomeDirectory() + "/.config/livemixdesktop/profile-backup")
+    static let backupDir = AppFiles.url("profile-backup")
     private let m: MixerModel
     init(model: MixerModel) { m = model }
 
@@ -120,9 +120,8 @@ final class DeviceAdminModel: ObservableObject {
     /// 自動バックアップ (読み込み・リセットの前)
     private func autoBackup() async throws -> URL {
         let data = try await exportData()
-        try FileManager.default.createDirectory(at: Self.backupDir, withIntermediateDirectories: true)
         let url = Self.backupDir.appendingPathComponent("profile-\(safeName)-\(fileStamp()).tar")
-        try data.write(to: url)
+        try AppFiles.write(data, to: url)   // ストリームキー等を含むので本人だけが読める権限で
         m.log("profile backup \(url.lastPathComponent) \(data.count) bytes")
         return url
     }
@@ -493,7 +492,7 @@ struct DeviceAdminView: View {
 
     private var reset: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("工場出荷リセット").font(.subheadline.bold())
+            HStack { Text("工場出荷リセット").font(.subheadline.bold()); UnverifiedBadge() }
             HStack {
                 Text("本体のすべての設定を工場出荷時に戻します。先に今の設定を自動で書き出します。")
                     .font(.caption).foregroundStyle(.secondary)
@@ -516,7 +515,7 @@ struct ResetSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Label("工場出荷時の設定に戻す", systemImage: "exclamationmark.triangle.fill").font(.headline).foregroundStyle(.red)
-            Text("シーン・音声・配信先 (ストリームキー)・画像・LAN 設定・ログインパスワードがすべて初期状態に戻ります。取り消せません。\n実行前に今の設定を ~/.config/livemixdesktop/profile-backup に書き出し、あとで「読み込む」で戻せるようにします。")
+            Text("シーン・音声・配信先 (ストリームキー)・画像・LAN 設定・ログインパスワードがすべて初期状態に戻ります。取り消せません。この機能は実機ではまだ試していません。\n実行前に今の設定を ~/.config/livemixdesktop/profile-backup に書き出し、あとで「読み込む」で戻せるようにします。")
                 .font(.caption).fixedSize(horizontal: false, vertical: true)
             Text("実行するには「\(DeviceAdminModel.resetWordRequired)」と入力してください").font(.caption)
             TextField("", text: $a.resetWord).textFieldStyle(.roundedBorder).frame(width: 160)

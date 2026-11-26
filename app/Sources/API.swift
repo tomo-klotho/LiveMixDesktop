@@ -118,7 +118,7 @@ final class MixerAPI: NSObject, URLSessionDelegate {
 
     /// CLI (livemix.py) が保存したセッションクッキーがあれば流用する
     static func cliSessionCookie() -> String? {
-        let path = NSHomeDirectory() + "/.config/livemixdesktop/cookies.txt"
+        let path = AppFiles.url("cookies.txt").path
         guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return nil }
         for line in text.split(separator: "\n") where !line.hasPrefix("#") || line.hasPrefix("#HttpOnly_") {
             let f = line.split(separator: "\t", omittingEmptySubsequences: false)  // 有効期限欄は空のことがある

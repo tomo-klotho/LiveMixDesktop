@@ -54,7 +54,8 @@ def _jar():
 
 
 def _save(jar):
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    STATE_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(STATE_DIR, 0o700)  # 本体の設定のバックアップなども置くので本人だけに
     jar.save(ignore_discard=True, ignore_expires=True)
     os.chmod(COOKIE_FILE, 0o600)
 

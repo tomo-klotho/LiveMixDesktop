@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-/// 本番用の操作画面 (フェーズ5): Program モニター・シーン切替・音声・配信状態を 1 画面に。
+/// 本番用の操作画面: Program モニター・シーン切替・音声・配信状態を 1 画面に。
 /// キーボード: 1〜8 で Preview を選ぶ / Space で CUT / Return で AUTO。
 /// 誤操作を防ぐため、ライブ開始・停止にはショートカットを付けない (確認ダイアログ必須)。
 struct LiveView: View {
@@ -121,8 +121,9 @@ struct LiveView: View {
                     default:
                         VStack(spacing: 8) {
                             Text("Program モニター").foregroundStyle(.secondary)
-                            Text(b.isLive ? "配信中は Mac モニターを使えません (本体は Program の配信先を 1 つしか有効にできないため)"
-                                          : "表示中は配信先 (YouTube 等) を一時的に無効にします")
+                            Text(mon.source == .ipad ? "iPad Stream (720p・15fps・映像のみ) で表示します。配信の設定には触りません"
+                                 : b.isLive ? "配信中は高画質 (RTSP) のモニターを使えません。iPad Stream に切り替えてください"
+                                 : "表示中は配信先 (YouTube 等) を一時的に無効にします")
                                 .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
                         }
                         .padding()
@@ -149,17 +150,21 @@ struct LiveView: View {
             HStack(spacing: 8) {
                 switch mon.state {
                 case .running:
-                    Text(mon.attached ? "配信の映像を受信中" : "モニター中 (配信先は一時無効)")
-                        .font(.caption).foregroundStyle(mon.attached ? .green : .orange)
+                    Text(mon.usingIPad ? "iPad Stream で受信中 (720p)" : mon.attached ? "配信の映像を受信中" : "モニター中 (配信先は一時無効)")
+                        .font(.caption).foregroundStyle(mon.usingIPad || mon.attached ? .green : .orange)
                     Text("\(String(format: "%.0f", mon.fps)) fps").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                     Spacer()
                     if mon.recordingStart != nil {
                         Button("Mac 録画を停止") { Task { await mon.stopRecording() } }
-                    } else {
+                    } else if !mon.usingIPad {
                         Button { mon.startRecording() } label: { Label("Mac に録画", systemImage: "record.circle") }
                     }
                     Button("モニターを閉じる") { Task { await mon.stop() } }
                 case .idle, .failed:
+                    Picker("", selection: $mon.source) {
+                        ForEach(MonitorController.Source.allCases) { Text($0.label).tag($0) }
+                    }
+                    .labelsHidden().fixedSize().help(mon.source.help)
                     Spacer()
                     Button("モニターを表示") { Task { await mon.start() } }
                         .disabled(m.conn != .ok)

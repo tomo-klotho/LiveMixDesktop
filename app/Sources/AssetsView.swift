@@ -10,6 +10,7 @@ struct Asset: Identifiable {
     let md5: String
     let datetime: String
     var image: NSImage?
+    var loadFailed = false      // 本体から画像を取得できなかった (日本語のファイル名など)
     var usedBy: [String] = []   // 使っているシーン名
     var isSystem: Bool { type != "image" }   // qml/font は本体の部品
     var deletable: Bool { !isSystem && usedBy.isEmpty }
@@ -92,7 +93,26 @@ final class AssetsModel: ObservableObject {
             if let path = URL(string: assets[i].url)?.path, let d = try? await m.api.fetchStatic(path) {
                 assets[i].image = NSImage(data: d)
             }
+            if assets[i].image == nil { assets[i].loadFailed = true }
         }
+    }
+
+    /// 本体は英数字以外のファイル名の画像を配信できない (一覧には出るが URL が 404 になる)。
+    /// 送る前に英数字の名前にする。例: 「オーバーレイiPad.png」→「obareiiPad.png」
+    static func deviceSafeName(_ name: String) -> String {
+        let ns = name as NSString
+        let ext = ns.pathExtension.lowercased().filter { $0.isASCII && ($0.isLetter || $0.isNumber) }
+        var stem = ns.deletingPathExtension
+        stem = stem.applyingTransform(.toLatin, reverse: false) ?? stem
+        stem = stem.applyingTransform(.stripDiacritics, reverse: false) ?? stem
+        var out = ""
+        for ch in stem.unicodeScalars {
+            if ch.isASCII, CharacterSet.alphanumerics.contains(ch) || "._-".unicodeScalars.contains(ch) { out.unicodeScalars.append(ch) }
+            else if !out.hasSuffix("-") { out += "-" }
+        }
+        out = out.trimmingCharacters(in: CharacterSet(charactersIn: "-."))
+        if out.isEmpty { out = "image-\(Int(Date().timeIntervalSince1970))" }
+        return ext.isEmpty ? out : "\(out).\(ext)"
     }
 
     // MARK: 追加
@@ -110,7 +130,7 @@ final class AssetsModel: ObservableObject {
                 guard let data = try? Data(contentsOf: url) else { continue }
                 let ct = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType ?? "image/png"
                 do {
-                    try await m.api.uploadAsset(type: "image", fileName: url.lastPathComponent, data: data, contentType: ct)
+                    try await m.api.uploadAsset(type: "image", fileName: Self.deviceSafeName(url.lastPathComponent), data: data, contentType: ct)
                     ok += 1
                 } catch { message = "「\(url.lastPathComponent)」を追加できませんでした: \(describe(error))" }
             }
@@ -211,6 +231,12 @@ struct AssetsView: View {
                 RoundedRectangle(cornerRadius: 6).fill(Color.black.opacity(0.85))
                 if let img = asset.image {
                     Image(nsImage: img).resizable().aspectRatio(contentMode: .fit).padding(4)
+                } else if asset.loadFailed {
+                    VStack(spacing: 4) {
+                        Image(systemName: "exclamationmark.triangle").font(.title2).foregroundStyle(.orange)
+                        Text("本体から取得できません").font(.caption2).foregroundStyle(.secondary)
+                    }
+                    .help("本体は日本語など英数字以外のファイル名の画像を配信できません。英数字の名前で追加し直してください")
                 } else if asset.isSystem {
                     Image(systemName: asset.type == "font" ? "textformat" : "curlybraces")
                         .font(.largeTitle).foregroundStyle(.secondary)

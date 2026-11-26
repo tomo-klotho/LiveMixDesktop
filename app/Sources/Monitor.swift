@@ -16,6 +16,25 @@ final class MonitorController: ObservableObject {
     /// 配信中に RTSP 5 も出ているとき、設定に触らず映像だけ受けている (止めても配信はそのまま)
     @Published private(set) var attached = false
 
+    /// 映像の受け方。
+    /// - rtsp: 本体の RTSP 5 (1080p30・音声あり)。配信エンジンを使うため、配信中は使えない
+    /// - ipad: iPad アプリ用の RTP (配信先 id 1, 720p15・映像のみ)。配信エンジンと無関係に本体が常時送っている。
+    ///   チャンネル3 (iPad) を「Director PGM Full」(シーン15) にして Program だけを全面に出し、止めたら元のシーンに戻す
+    enum Source: String, CaseIterable, Identifiable {
+        case rtsp, ipad
+        var id: String { rawValue }
+        var label: String { self == .rtsp ? "高画質 (RTSP)" : "iPad Stream" }
+        var help: String {
+            self == .rtsp ? "1080p30・音声あり。配信エンジンを使うため、配信中は使えず、表示中は YouTube などの配信先を一時的に無効にします"
+                          : "720p15・映像のみ。配信の設定には触りません。表示中は iPad アプリ用の画面 (チャンネル3) を Program 全面に切り替えます"
+        }
+    }
+    @Published var source: Source = Source(rawValue: UserDefaults.standard.string(forKey: "monitorSource") ?? "") ?? .rtsp {
+        didSet { UserDefaults.standard.set(source.rawValue, forKey: "monitorSource") }
+    }
+    /// 今動いているモニターが iPad Stream で受けているか
+    @Published private(set) var usingIPad = false
+
     private let api: MixerAPI
     private let log: (String) -> Void
     private var ffmpeg: Process?
@@ -27,7 +46,11 @@ final class MonitorController: ObservableObject {
     static let rtspId = 5
     static let ipadStreamId = 1   // 配信エンジンの対象外なので触らない
     static var url: String { "rtsp://\(MixerAPI.host):554/session" }
-    static let restoreFile = URL(fileURLWithPath: NSHomeDirectory() + "/.config/livemixdesktop/monitor-restore.json")
+    static let restoreFile = AppFiles.url("monitor-restore.json")
+    /// iPad Stream 用: チャンネル3 を切り替える前のシーン。RTSP 側の restoreFile とは完全に別 (配信エンジンには触らない)
+    static let ipadRestoreFile = AppFiles.url("monitor-ipad-restore.json")
+    static let ipadChannel = 3
+    static let pgmFullScene = 15   // 本体のシーン一覧で "Director PGM Full"
 
     init(api: MixerAPI, log: @escaping (String) -> Void) {
         self.api = api
@@ -44,6 +67,7 @@ final class MonitorController: ObservableObject {
         guard state == .idle || isFailed else { return }
         guard let ff = Self.ffmpegPath() else { state = .failed("ffmpeg が見つかりません (brew install ffmpeg)"); return }
         state = .starting
+        if source == .ipad { await startIPad(ff); return }
         // 戻していない設定が残っていれば (前回の異常終了・受信エラー後の再開始など)、必ず先に元へ戻す。
         // そうしないと「既に無効」の配信を記録し損ね、後で有効に戻せなくなる
         if Self.needsRestore {
@@ -63,12 +87,12 @@ final class MonitorController: ObservableObject {
                     $0["id"] as? Int == Self.rtspId && ($0["statusMsg"] as? String ?? "") == "streaming"
                 }
                 if rtspLive {
-                    launchFFmpeg(ff)
+                    launchFFmpeg(ff, input: rtspInput)
                     attached = true
                     state = .running
                     log("monitor attached to live RTSP")
                 } else {
-                    state = .failed("配信中は Mac モニターを使えません。本体は Program の配信先を 1 つしか有効にできず、RTSP を有効にすると YouTube などの配信先が無効になるためです")
+                    state = .failed("配信中は Mac モニターを使えません。本体は Program の配信先を 1 つしか有効にできず、RTSP を有効にすると YouTube などの配信先が無効になるためです。iPad Stream なら配信中も表示できます")
                 }
                 return
             }
@@ -88,7 +112,7 @@ final class MonitorController: ObservableObject {
             guard !toDisable.contains(where: { now[$0] == true }) else { throw MonitorError("配信を無効にできませんでした") }
             try await api.call("POST", "/streamer/start", ["toggle": false])
             try await waitRtspStreaming()
-            launchFFmpeg(ff)
+            launchFFmpeg(ff, input: rtspInput)
             state = .running
             log("monitor running")
         } catch {
@@ -101,6 +125,16 @@ final class MonitorController: ObservableObject {
     // MARK: 停止
     func stop() async {
         guard state == .running || state == .starting || isFailed else { return }
+        if usingIPad {   // iPad Stream: 配信の設定には触らず、チャンネル3 のシーンだけ戻す
+            state = .stopping
+            ffmpeg?.terminate(); ffmpeg = nil
+            usingIPad = false
+            await restoreIPadChannel()
+            frame = nil
+            if !isFailed { state = .idle }
+            log("monitor (ipad) stopped")
+            return
+        }
         if attached {   // 受信だけしていた: 本体の設定には触らない
             await stopRecording()
             ffmpeg?.terminate(); ffmpeg = nil
@@ -159,6 +193,10 @@ final class MonitorController: ObservableObject {
 
     /// 起動時の後始末: 前回の異常終了で残った設定だけを戻す (今回のモニターには触らない)
     func restoreLeftover() async {
+        if FileManager.default.fileExists(atPath: Self.ipadRestoreFile.path), !usingIPad, state == .idle {
+            log("leftover ipad monitor state found; restoring channel \(Self.ipadChannel)")
+            await restoreIPadChannel()
+        }
         guard Self.needsRestore, !owned, state == .idle else { return }
         log("leftover monitor state found; restoring")
         await restore()
@@ -172,7 +210,7 @@ final class MonitorController: ObservableObject {
     static let recordDir = URL(fileURLWithPath: NSHomeDirectory() + "/Movies/Live Mix Desktop")
 
     func startRecording() {
-        guard state == .running, recorder == nil, let ff = Self.ffmpegPath() else { return }
+        guard state == .running, !usingIPad, recorder == nil, let ff = Self.ffmpegPath() else { return }
         try? FileManager.default.createDirectory(at: Self.recordDir, withIntermediateDirectories: true)
         let f = DateFormatter(); f.dateFormat = "yyyyMMdd-HHmmss"
         let url = Self.recordDir.appendingPathComponent("LiveMixDesktop-\(f.string(from: Date())).mp4")
@@ -217,11 +255,12 @@ final class MonitorController: ObservableObject {
     }
 
     // MARK: ffmpeg → JPEG フレーム
-    private func launchFFmpeg(_ path: String) {
+    private var rtspInput: [String] { ["-rtsp_transport", "tcp", "-timeout", "5000000", "-fflags", "nobuffer", "-flags", "low_delay", "-i", Self.url] }
+
+    private func launchFFmpeg(_ path: String, input: [String]) {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: path)
-        p.arguments = ["-hide_banner", "-loglevel", "error", "-rtsp_transport", "tcp",
-                       "-timeout", "5000000", "-fflags", "nobuffer", "-flags", "low_delay", "-i", Self.url,
+        p.arguments = ["-hide_banner", "-loglevel", "error"] + input + [
                        "-an", "-vf", "fps=15,scale=960:-2", "-q:v", "6",
                        "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1"]
         let out = Pipe()
@@ -240,6 +279,7 @@ final class MonitorController: ObservableObject {
                 guard let self = self, self.state == .running, self.ffmpeg === proc else { return }
                 self.log("ffmpeg exited \(proc.terminationStatus)")
                 if self.attached { self.attached = false }
+                if self.usingIPad { self.usingIPad = false; Task { await self.restoreIPadChannel() } }
                 self.state = .failed("映像の受信が止まりました (ffmpeg 終了コード \(proc.terminationStatus))")
             }
         }
@@ -259,6 +299,12 @@ final class MonitorController: ObservableObject {
         let p = ffmpeg; ffmpeg = nil
         p?.terminate()
         if attached { attached = false }
+        if usingIPad {
+            usingIPad = false
+            Task { await restoreIPadChannel() }
+            state = .failed("iPad Stream の映像が届きません。本体が送っていないか、Mac のファイアウォールで止められている可能性があります")
+            return
+        }
         state = .failed("映像が届かなくなりました。本体との接続を確かめてください")
     }
 
@@ -270,6 +316,90 @@ final class MonitorController: ObservableObject {
         frameCount += 1
         let dt = Date().timeIntervalSince(fpsWindowStart)
         if dt >= 1 { fps = Double(frameCount) / dt; frameCount = 0; fpsWindowStart = Date() }
+    }
+
+    // MARK: iPad Stream (RTP)
+    /// 配信先 id 1 の RTP を受ける。触るのはチャンネル3 のシーンだけ (/streamer と /streams には書き込まない)
+    private func startIPad(_ ff: String) async {
+        do {
+            let d = try await api.call("GET", "/streams") as? [String: Any]
+            guard let s = (d?["streams"] as? [[String: Any]] ?? []).first(where: { $0["id"] as? Int == Self.ipadStreamId }) else {
+                throw MonitorError("本体に iPad Stream の配信先がありません")
+            }
+            guard s["isEnabled"] as? Bool == true else { throw MonitorError("本体の iPad Stream が無効になっています") }
+            let dest = s["destination"] as? String ?? ""
+            guard let u = URLComponents(string: dest), u.scheme == "rtp", let host = u.host, let port = u.port else {
+                throw MonitorError("iPad Stream の送り先を読み取れません: \(dest)")
+            }
+            guard Self.localIPv4Addresses().contains(host) else {
+                throw MonitorError("iPad Stream の送り先 (\(host)) がこの Mac ではありません。本体と直結した Mac の IP が \(host) のときだけ使えます")
+            }
+            let sdp = """
+            v=0
+            o=- 0 0 IN IP4 \(MixerAPI.host)
+            s=iPad Stream
+            c=IN IP4 \(host)
+            t=0 0
+            m=video \(port) RTP/AVP 96
+            a=rtpmap:96 H264/90000
+
+            """
+            let sdpURL = FileManager.default.temporaryDirectory.appendingPathComponent("livemixdesktop-ipad-stream.sdp")
+            try sdp.write(to: sdpURL, atomically: true, encoding: .utf8)
+
+            // チャンネル3 を Program 全面 (シーン15) に。元のシーンは先にファイルへ控える
+            let ch = try await api.call("GET", "/channels") as? [String: Any]
+            let cur = (ch?["channels"] as? [[String: Any]] ?? []).first { $0["id"] as? Int == Self.ipadChannel }?["sceneId"] as? Int
+            if let cur = cur, cur != Self.pgmFullScene {
+                if !FileManager.default.fileExists(atPath: Self.ipadRestoreFile.path) {   // 前回分が残っていれば、その (本来の) 値を優先
+                    let data = try JSONSerialization.data(withJSONObject: ["scene": cur, "at": ISO8601DateFormatter().string(from: Date())])
+                    try AppFiles.write(data, to: Self.ipadRestoreFile)
+                }
+                try await api.call("PATCH", "/channels/\(Self.ipadChannel)", ["sceneId": Self.pgmFullScene, "sender": "livemixdesktop"])
+                log("monitor (ipad): channel \(Self.ipadChannel) scene \(cur) -> \(Self.pgmFullScene)")
+            }
+            usingIPad = true
+            launchFFmpeg(ff, input: ["-protocol_whitelist", "file,udp,rtp", "-fflags", "nobuffer", "-flags", "low_delay", "-i", sdpURL.path])
+            if state == .starting { state = .running }
+            log("monitor (ipad) running from \(dest)")
+        } catch {
+            log("monitor (ipad) start failed: \(error)")
+            usingIPad = false
+            await restoreIPadChannel()
+            state = .failed(describe(error))
+        }
+    }
+
+    /// チャンネル3 を控えておいたシーンに戻す。今もシーン15 のときだけ戻す (その間に誰かが変えていたら尊重する)
+    func restoreIPadChannel() async {
+        guard let data = try? Data(contentsOf: Self.ipadRestoreFile),
+              let o = try? JSONSerialization.jsonObject(with: data) as? [String: Any], let scene = o["scene"] as? Int else { return }
+        do {
+            let ch = try await api.call("GET", "/channels") as? [String: Any]
+            let cur = (ch?["channels"] as? [[String: Any]] ?? []).first { $0["id"] as? Int == Self.ipadChannel }?["sceneId"] as? Int
+            if cur == Self.pgmFullScene {
+                try await api.call("PATCH", "/channels/\(Self.ipadChannel)", ["sceneId": scene, "sender": "livemixdesktop"])
+            }
+            try? FileManager.default.removeItem(at: Self.ipadRestoreFile)
+            log("monitor (ipad): channel \(Self.ipadChannel) restored to scene \(scene) (was \(cur.map(String.init) ?? "?"))")
+        } catch {
+            log("monitor (ipad) channel restore FAILED: \(error)")   // ファイルは残し、次回の起動・停止でもう一度戻す
+        }
+    }
+
+    static func localIPv4Addresses() -> Set<String> {
+        var out = Set<String>()
+        var ifap: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&ifap) == 0, let first = ifap else { return out }
+        defer { freeifaddrs(ifap) }
+        for p in sequence(first: first, next: { $0.pointee.ifa_next }) {
+            guard let sa = p.pointee.ifa_addr, sa.pointee.sa_family == UInt8(AF_INET) else { continue }
+            var buf = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            if getnameinfo(sa, socklen_t(sa.pointee.sa_len), &buf, socklen_t(buf.count), nil, 0, NI_NUMERICHOST) == 0 {
+                out.insert(String(cString: buf))
+            }
+        }
+        return out
     }
 
     // MARK: 本体 API の小道具
@@ -326,7 +456,7 @@ final class MonitorController: ObservableObject {
         }
         let disabled = all.sorted()
         let data = try JSONSerialization.data(withJSONObject: ["disabled": disabled, "at": ISO8601DateFormatter().string(from: Date())])
-        try data.write(to: Self.restoreFile, options: .atomic)
+        try AppFiles.write(data, to: Self.restoreFile)
     }
 
     private func describe(_ e: Error) -> String {
@@ -399,7 +529,7 @@ struct MonitorView: View {
                 case .running:
                     Label("PGM 受信中  \(String(format: "%.0f", mon.fps)) fps", systemImage: "dot.radiowaves.left.and.right")
                         .foregroundStyle(.green)
-                    Text("配信 (YouTube 等) は一時無効").foregroundStyle(.secondary)
+                    Text(mon.usingIPad ? "iPad Stream (720p)" : "配信 (YouTube 等) は一時無効").foregroundStyle(.secondary)
                 case .idle, .failed:
                     Button("開始") { Task { await mon.start() } }
                 default:

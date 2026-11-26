@@ -60,6 +60,7 @@ final class BroadcastModel: ObservableObject {
     @Published var recRemaining = -1
     @Published var editing: StreamDest?
     @Published var confirmLive = false
+    @Published var confirmFormat = false
 
     // 一時停止画面 (§13.7–13.9)
     @Published var pauseUseColor = true
@@ -289,9 +290,7 @@ final class BroadcastModel: ObservableObject {
                let u = d["url"] as? String, let path = URL(string: u)?.path,
                let old = try? await self.m.api.fetchStatic(path) {
                 let f = DateFormatter(); f.dateFormat = "yyyyMMdd-HHmmss"
-                let dir = URL(fileURLWithPath: NSHomeDirectory() + "/.config/livemixdesktop/pause-backup")
-                try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-                try? old.write(to: dir.appendingPathComponent("pause_screen-\(f.string(from: Date())).bin"))
+                try? AppFiles.write(old, to: AppFiles.url("pause-backup/pause_screen-\(f.string(from: Date())).bin"))
             }
             let ct = url.pathExtension.lowercased() == "png" ? "image/png" : "image/jpeg"
             try await self.m.api.uploadMultipart("/assets/pause_screen/upload", fields: [("sender", "livemixdesktop")],
@@ -456,7 +455,7 @@ struct BroadcastView: View {
 
     private var recording: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("USB 録画").font(.subheadline.bold())
+            HStack { Text("USB 録画").font(.subheadline.bold()); UnverifiedBadge() }
             ForEach(b.streams.filter { $0.isRecording }) { s in
                 HStack(spacing: 8) {
                     Toggle("録画を有効", isOn: Binding(get: { s.isEnabled }, set: { b.setEnabled(s, $0) }))
@@ -469,11 +468,17 @@ struct BroadcastView: View {
                 Text("USB: \(usbLabel)").font(.caption).foregroundStyle(.secondary)
                 if b.recRemaining > 0 { Text("残り \(b.recRemaining / 60) 分").font(.caption).foregroundStyle(.secondary) }
                 Spacer()
-                Button("USB をフォーマット") { b.formatUSB() }.controlSize(.small)
+                Button("USB をフォーマット…") { b.confirmFormat = true }.controlSize(.small)
                     .disabled(b.isLive || b.usbStatus == "notMounted")
             }
-            Text("録画は「録画を有効」にしてから「ライブ開始」で始まります。配信と同時に 1 つずつ、合計 2 つまで。")
-                .font(.caption2).foregroundStyle(.secondary)
+            Text("録画は「録画を有効」にしてから「ライブ開始」で始まります。本体は Program の配信先を同時に 1 つしか有効にできないため、配信と録画を同時に行えるかは確かめていません。")
+                .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        }
+        .alert("USB をフォーマット", isPresented: $b.confirmFormat) {
+            Button("フォーマットする", role: .destructive) { b.formatUSB() }
+            Button("やめる", role: .cancel) {}
+        } message: {
+            Text("本体に挿した USB ストレージの中身がすべて消えます。取り消せません。")
         }
     }
 
