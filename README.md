@@ -1,5 +1,7 @@
 # Live Mix Desktop
 
+日本語 | [English](README.en.md)
+
 I-O DATA GV-LSMIXER/I（ATEN UC9020 StreamLIVE HD 系）を **Mac から操作する非公式アプリ**です。
 本体を USB でつなぎ、iPad 用の公式アプリの代わりに使えます。本体のファームウェアは書き換えません。
 本体が公開している RESTful API だけを使います。
@@ -7,6 +9,8 @@ I-O DATA GV-LSMIXER/I（ATEN UC9020 StreamLIVE HD 系）を **Mac から操作�
 > **非公式です。** I-O DATA・ATEN とは関係がなく、両社のサポート対象外です。
 > 動作の保証はありません。ライブ配信の開始、設定の読み込み、工場出荷時へのリセットなど、
 > 本体の状態を変える操作もできます。自己責任でお使いください。
+
+キーワード: GV-LSMIXER/I, GV-LSMIXER, ATEN UC9020, StreamLIVE HD, LIVEACROSS, OnAir, Mac, macOS, ライブ配信, ビデオスイッチャー
 
 ## できること
 
@@ -26,6 +30,13 @@ I-O DATA GV-LSMIXER/I（ATEN UC9020 StreamLIVE HD 系）を **Mac から操作�
 - Xcode の Command Line Tools（`xcode-select --install`）
 - Program モニターを使う場合は ffmpeg（`brew install ffmpeg`）
 - 確認した機器: GV-LSMIXER/I（ファームウェア V1.4.136）
+- 確認した Mac: Apple シリコンの Mac、macOS 27.2
+
+### ATEN UC9020 で使えるか
+
+GV-LSMIXER/I は ATEN UC9020（StreamLIVE HD）と同じ系統の機器で、API も同じ資料に沿っています。
+ただ、ATEN の UC9020 そのものでは試していません。ログインの方法、本体の IP アドレス、配信先の数などが違う可能性があります。
+UC9020 やほかのファームウェアで試した方は、動いたかどうかを [Issues](https://github.com/tomo-klotho/LiveMixDesktop/issues) で教えてもらえると助かります。
 
 ## ビルドと起動
 
@@ -89,7 +100,7 @@ Apple Development の証明書があれば、その証明書で署名します�
   - `app.log` … 動作の記録（パスワードや cookie は書きません）
   - `scene-templates.json` … シーンのテンプレート
   - `profile-backup/` … 本体の設定のバックアップ。**ストリームキーやログインパスワードも入る**ので、人に渡さないでください
-  - `pause-backup/`、`monitor-restore.json` … 変更前の状態を戻すための控え
+  - `pause-backup/`、`monitor-restore.json`、`monitor-ipad-restore.json` … 変更前の状態を戻すための控え
 
 ## API について
 
@@ -97,6 +108,6 @@ Apple Development の証明書があれば、その証明書で署名します�
 
 ## ライセンス
 
-MIT License。[LICENSE](LICENSE) を参照してください。
+MIT License。[LICENSE](LICENSE) を参照してください。変更履歴は [CHANGELOG.md](CHANGELOG.md) にあります。
 
 I-O DATA、GV-LSMIXER は株式会社アイ・オー・データ機器の、ATEN、StreamLIVE は ATEN International の商標または登録商標です。

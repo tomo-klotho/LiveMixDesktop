@@ -35,3 +35,10 @@ struct UnverifiedBadge: View {
             .help("この機能は実機でまだ試していません。大事な設定やデータがあるときは使わないでください。")
     }
 }
+
+/// アプリのバージョン (build.sh が VERSION ファイルと git のコミット数から Info.plist に書く)
+enum AppVersion {
+    static var version: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?" }
+    static var build: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?" }
+    static var label: String { "v\(version) (\(build))" }
+}

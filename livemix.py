@@ -28,6 +28,13 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+def _version():
+    # リポジトリ直下の VERSION を読む (単体でコピーして使うときは "dev")
+    try:
+        return (Path(__file__).resolve().parent / "VERSION").read_text().strip()
+    except OSError:
+        return "dev"
+
 HOST = os.environ.get("LMD_HOST", "192.168.254.1")
 BASE = f"https://{HOST}/api/v2.0"
 STATE_DIR = Path.home() / ".config" / "livemixdesktop"
@@ -228,6 +235,7 @@ def cmd_get(a):
 
 def main():
     p = argparse.ArgumentParser(description="GV-LSMIXER/I コントローラ")
+    p.add_argument("--version", action="version", version=f"livemix {_version()}")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("login").set_defaults(f=cmd_login)

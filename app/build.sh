@@ -3,6 +3,9 @@
 set -eu
 cd "${0:A:h}"
 APP=build/LiveMixDesktop.app
+# バージョンはリポジトリ直下の VERSION、ビルド番号は git のコミット数 (git がなければ 0)
+VERSION=$(tr -d ' \n' < ../VERSION)
+BUILD=$(git -C .. rev-list --count HEAD 2>/dev/null || echo 0)
 rm -rf "$APP"; mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 # アイコン (Resources/AppIcon.icns は make-icon.swift から作成)
 cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
@@ -17,8 +20,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleDisplayName</key><string>Live Mix Desktop</string>
   <key>CFBundleExecutable</key><string>LiveMixDesktop</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>0.1</string>
-  <key>CFBundleVersion</key><string>1</string>
+  <key>CFBundleShortVersionString</key><string>$VERSION</string>
+  <key>CFBundleVersion</key><string>$BUILD</string>
   <key>LSMinimumSystemVersion</key><string>15.0</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>NSLocalNetworkUsageDescription</key><string>USB 接続した GV-LSMIXER/I (192.168.254.1) を操作するために使います。</string>
@@ -29,4 +32,4 @@ PLIST
 ID=${SIGN_IDENTITY:-$(security find-identity -v -p codesigning | awk '/Apple Development/ {print $2; exit}')}
 codesign --force -s "${ID:--}" "$APP"
 [[ -n "${ID:-}" ]] && echo "signed with: Apple Development (${ID[1,8]}…)" || echo "signed with: ad-hoc"
-echo "built: $PWD/$APP"
+echo "built: $PWD/$APP (version $VERSION, build $BUILD)"

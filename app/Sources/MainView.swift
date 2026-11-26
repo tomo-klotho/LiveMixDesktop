@@ -114,7 +114,10 @@ struct MainView: View {
                 Button { Task { await m.refresh() } } label: { Image(systemName: "arrow.clockwise") }
                     .buttonStyle(.borderless).help("読み直す")
             }
-            .padding(.horizontal, 12).padding(.bottom, 8)
+            .padding(.horizontal, 12)
+            Text(AppVersion.label).font(.caption2).foregroundStyle(.tertiary).lineLimit(1).help("Live Mix Desktop \(AppVersion.label)")
+                .padding(.horizontal, 12).padding(.bottom, 8)
+                .textSelection(.enabled)
         }
     }
 }
