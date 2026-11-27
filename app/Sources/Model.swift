@@ -101,6 +101,11 @@ final class MixerModel: ObservableObject {
     @Published var pgm = 0
     @Published var sceneNames: [Int: String] = [:]
     @Published var inputs: [AudioChannel] = []
+    /// AFV (Audio Follows Video): 入力 id → オンか。HDMI1/HDMI2 だけ (/source/audio の isFollowVideo)
+    @Published var afv: [Int: Bool] = [:]
+    /// いま PGM に音が乗っているか (/source/audio の isAudibleOnPgm。AFV オンで映像が PGM に無いと false)
+    @Published var audibleOnPgm: [Int: Bool] = [:]
+    private var afvEditedAt: [Int: Date] = [:]
     @Published var outputs: [AudioChannel] = []
     @Published var autoMs = 1000
     @Published var transitioning = false
@@ -184,6 +189,7 @@ final class MixerModel: ObservableObject {
             if sceneNames.isEmpty { try await loadStatic() }
             try await loadChannels()
             try await loadAudio(.input)
+            try? await loadSourceAudio()
             try await loadAudio(.output)
             conn = .ok
             await loadThumbs()
@@ -235,6 +241,40 @@ final class MixerModel: ObservableObject {
         if kind == .input { inputs = fresh } else { outputs = fresh }
     }
 
+    private func loadSourceAudio() async throws {
+        guard let d = try await api.call("GET", "/source/audio") as? [String: Any],
+              let list = d["audio"] as? [[String: Any]] else { return }
+        var a = afv, on = [Int: Bool]()
+        for s in list {
+            guard let id = s["id"] as? Int else { continue }
+            on[id] = s["isAudibleOnPgm"] as? Bool ?? true
+            // 映像のある入力 (HDMI) だけ AFV を持つ
+            guard (s["type"] as? String) == "digital" else { continue }
+            if let t = afvEditedAt[id], Date().timeIntervalSince(t) < 1.5 { continue }   // 手元で変えた直後は上書きしない
+            a[id] = s["isFollowVideo"] as? Bool ?? false
+        }
+        if a != afv { afv = a }
+        if on != audibleOnPgm { audibleOnPgm = on }
+    }
+
+    func setAFV(_ id: Int, _ on: Bool) {
+        let old = afv[id]
+        afv[id] = on
+        afvEditedAt[id] = Date()
+        Task {
+            do {
+                try await api.call("PATCH", "/source/audio/\(id)", ["isFollowVideo": on, "sender": "livemixdesktop"])
+                // 本体の挙動 (2026-11-27 実機確認): AFV をオンにすると、その入力の isMute が true になる (AFV 中の内部表現。音は PGM に乗る)。
+                // オフにしても isMute は true のまま残り、音が出なくなる → オフにしたらミュートを解く。
+                // 逆に AFV 中にミュートを解くと、本体は AFV をオフにする
+                if !on { try await api.call("PATCH", "/audio/input/\(id)", ["isMute": false, "sender": "livemixdesktop"]) }
+                afvEditedAt[id] = nil
+                try? await loadAudio(.input)
+                try? await loadSourceAudio()
+            } catch { afv[id] = old; await handle(error) }
+        }
+    }
+
     // MARK: 映像
     func selectPreview(_ scene: Int) {
         guard scene != pgm else { return }   // PRV と PGM に同じシーンは不可 (2010103)
@@ -272,6 +312,22 @@ final class MixerModel: ObservableObject {
     }
 
     func toggleMute(_ kind: Kind, _ id: Int) {
+        // AFV 中 (本体の isMute は true) にミュートを押したら、AFV を切ってミュートにする
+        if kind == .input, afv[id] == true {
+            afv[id] = false
+            afvEditedAt[id] = Date()
+            update(kind, id) { $0.isMute = true }
+            Task {
+                do {
+                    try await api.call("PATCH", "/source/audio/\(id)", ["isFollowVideo": false, "sender": "livemixdesktop"])
+                    try await api.call("PATCH", "/audio/input/\(id)", ["isMute": true, "sender": "livemixdesktop"])
+                    afvEditedAt[id] = nil
+                    try? await loadAudio(.input)
+                    try? await loadSourceAudio()
+                } catch { await handle(error) }
+            }
+            return
+        }
         var newValue = false
         update(kind, id) { $0.isMute.toggle(); newValue = $0.isMute }
         send(kind, id, ["isMute": newValue])

@@ -26,7 +26,7 @@ struct LiveView: View {
                 }
                 .frame(minWidth: 560)
                 VStack(alignment: .leading, spacing: 14) {
-                    ScenesView()
+                    ScenesView(specs: sceneThumbs.specs)
                     sceneNameList
                     Divider()
                     ScrollView {
@@ -42,16 +42,16 @@ struct LiveView: View {
         }
         .background(numberKeys)
         .frame(minWidth: 960, minHeight: 640)
-        .onAppear { m.startPolling(); b.start() }
+        .onAppear { m.startPolling(); b.start(); sceneThumbs.start(api: m.api) }
         .onDisappear {
-            m.stopPolling(); b.stop()
+            m.stopPolling(); b.stop(); sceneThumbs.stop()
             Task { await mon.stop() }   // モニターで一時無効にした配信先を戻す (受信だけのときは配信に触らない)
         }
-        .alert("ライブ配信を開始", isPresented: $b.confirmLive) {
+        .alert(b.liveConfirmTitle, isPresented: $b.confirmLive) {
             Button("開始する", role: .destructive) { b.goLive() }
             Button("やめる", role: .cancel) {}
         } message: {
-            Text("有効な配信先 (\(liveTargets)) に配信を始めます。YouTube 等に実際に公開されます。")
+            Text(b.liveConfirmMessage)
         }
         .alert("配信を停止", isPresented: $confirmStop.value) {
             Button("停止する", role: .destructive) { b.stopLive() }
@@ -62,11 +62,7 @@ struct LiveView: View {
     }
 
     @StateObject private var confirmStop = Flag()
-
-    private var liveTargets: String {
-        b.streams.filter { $0.isEnabled && !$0.isRecording && $0.id != MonitorController.ipadStreamId && $0.id != MonitorController.rtspId }
-            .map(\.name).joined(separator: ", ")
-    }
+    @StateObject private var sceneThumbs = SceneThumbsModel()
 
     // MARK: 配信状態
     private var statusBar: some View {
@@ -97,7 +93,7 @@ struct LiveView: View {
             } else {
                 Button("ライブ開始") { b.confirmLive = true }
                     .tint(.red).buttonStyle(.borderedProminent)
-                    .disabled(liveTargets.isEmpty || m.conn != .ok)
+                    .disabled(!b.canGoLive || m.conn != .ok)
             }
             Button { m.section = .broadcast } label: { Image(systemName: "gearshape") }
                 .buttonStyle(.borderless).help("配信先・エンコードの設定")

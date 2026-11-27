@@ -125,7 +125,11 @@ final class BroadcastModel: ObservableObject {
             }
             if resolutions.isEmpty { try await loadCodec() }
             if let sto = try await m.api.call("GET", "/storage") as? [String: Any],
-               let usb = sto["USB"] as? [String: Any] { usbStatus = usb["status"] as? String ?? "notMounted" }
+               let usb = sto["USB"] as? [String: Any] {
+                usbStatus = usb["status"] as? String ?? "notMounted"
+                // 待機中でも、録画に使えない理由 (フォーマットが必要・書き込みが遅いなど) があればそちらを出す
+                if usbStatus == "idle", let u = usb["usability"] as? String, u != "ok" { usbStatus = u }
+            }
             message = nil
         } catch { message = describe(error) }
     }
@@ -304,8 +308,58 @@ final class BroadcastModel: ObservableObject {
         }
     }
 
+    var usbStatusLabel: String {
+        // 本体の値: notPlugged / notMounted / idle / busy / recording / formatting
+        switch usbStatus {
+        case "idle": return "接続済み"
+        case "busy": return "使用中"
+        case "recording": return "録画中"
+        case "formatting": return "フォーマット中…"
+        case "notPlugged": return "未接続"
+        case "notMounted": return "読み込めません (フォーマットが必要かもしれません)"
+        case "formattingRequired": return "フォーマットが必要です"
+        case "writeSpeedTooSlow": return "書き込みが遅く、録画に使えません"
+        case "notEnoughCapacity": return "空き容量が足りません"
+        case "notUsb3": return "USB 3 の機器が必要です"
+        default: return usbStatus
+        }
+    }
+
+    // MARK: ライブ開始の確認
+    /// インターネットに出る配信先 (RTMP)。iPad Stream と RTSP は含めない
+    var publicTargets: [StreamDest] {
+        streams.filter { $0.isEnabled && !$0.isRecording && $0.id != MonitorController.ipadStreamId && $0.id != MonitorController.rtspId }
+    }
+    var recordingEnabled: Bool { streams.contains { $0.isRecording && $0.isEnabled } }
+    private var rtspEnabled: Bool { streams.contains { $0.id == MonitorController.rtspId && $0.isEnabled } }
+    /// ライブ開始で何かが始まるか (iPad Stream は配信エンジンの対象外)
+    var canGoLive: Bool { !publicTargets.isEmpty || recordingEnabled || rtspEnabled }
+    var liveConfirmTitle: String { publicTargets.isEmpty && recordingEnabled ? "録画を開始" : "ライブ配信を開始" }
+    var liveConfirmMessage: String {
+        var lines: [String] = []
+        if !publicTargets.isEmpty {
+            lines.append("「\(publicTargets.map(\.name).joined(separator: "」「"))」に配信を始めます。YouTube などに実際に公開されます。")
+        } else if recordingEnabled {
+            lines.append("インターネットへの配信はしません。")
+        }
+        if recordingEnabled {
+            let name = streams.first { $0.isRecording }?.recFileName ?? ""
+            lines.append("本体の USB \(publicTargets.isEmpty ? "に" : "にも")録画します" + (name.isEmpty ? "。" : " (ファイル名: \(name))。"))
+            if usbStatus != "idle" {
+                lines.append("⚠️ USB は「\(usbStatusLabel)」です。録画できないかもしれません。")
+            }
+        } else {
+            lines.append("USB への録画はしません。")
+        }
+        if publicTargets.isEmpty && !recordingEnabled && rtspEnabled {
+            lines.append("RTSP 5 だけに出力します (インターネットには公開されません)。")
+        }
+        return lines.joined(separator: "\n")
+    }
+
     func formatUSB() {
-        run { try await self.m.api.call("POST", "/storage/0"); self.m.log("broadcast: format USB") }
+        // index は "USB" (GET /storage のキー)。"0" では何も起きない (2026-11-27 実機確認)
+        run { try await self.m.api.call("POST", "/storage/USB"); self.m.log("broadcast: format USB") }
     }
 
     private func run(_ f: @escaping () async throws -> Void) {
@@ -361,11 +415,11 @@ struct BroadcastView: View {
         } message: {
             Text("本体の一時停止画像を「\(b.confirmPauseUpload?.lastPathComponent ?? "")」に置き換えます。今の画像は ~/.config/livemixdesktop/pause-backup に保存します。")
         }
-        .alert("ライブ配信を開始", isPresented: $b.confirmLive) {
+        .alert(b.liveConfirmTitle, isPresented: $b.confirmLive) {
             Button("開始する", role: .destructive) { b.goLive() }
             Button("やめる", role: .cancel) {}
         } message: {
-            Text("有効な配信先 (\(b.streams.filter { $0.isEnabled && !$0.isRecording }.map(\.name).joined(separator: ", "))) に配信を始めます。YouTube 等に実際に公開されます。")
+            Text(b.liveConfirmMessage)
         }
     }
 
@@ -389,7 +443,7 @@ struct BroadcastView: View {
             } else {
                 Button("ライブ開始") { b.confirmLive = true }
                     .tint(.red)   // Return では反応させない (誤操作防止)
-                    .disabled(b.streams.allSatisfy { !$0.isEnabled || $0.isRecording })
+                    .disabled(!b.canGoLive)
             }
         }
     }
@@ -455,7 +509,7 @@ struct BroadcastView: View {
 
     private var recording: some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack { Text("USB 録画").font(.subheadline.bold()); UnverifiedBadge() }
+            Text("USB 録画").font(.subheadline.bold())
             ForEach(b.streams.filter { $0.isRecording }) { s in
                 HStack(spacing: 8) {
                     Toggle("録画を有効", isOn: Binding(get: { s.isEnabled }, set: { b.setEnabled(s, $0) }))
@@ -469,9 +523,9 @@ struct BroadcastView: View {
                 if b.recRemaining > 0 { Text("残り \(b.recRemaining / 60) 分").font(.caption).foregroundStyle(.secondary) }
                 Spacer()
                 Button("USB をフォーマット…") { b.confirmFormat = true }.controlSize(.small)
-                    .disabled(b.isLive || b.usbStatus == "notMounted")
+                    .disabled(b.isLive || ["notPlugged", "recording", "formatting"].contains(b.usbStatus))
             }
-            Text("録画は「録画を有効」にしてから「ライブ開始」で始まります。本体は Program の配信先を同時に 1 つしか有効にできないため、配信と録画を同時に行えるかは確かめていません。")
+            Text("録画は「録画を有効」にしてから「ライブ開始」で始まります。USB 録画は、RTMP 配信 (YouTube など) や RTSP と同時に行えます。")
                 .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
         .alert("USB をフォーマット", isPresented: $b.confirmFormat) {
@@ -482,9 +536,7 @@ struct BroadcastView: View {
         }
     }
 
-    private var usbLabel: String {
-        switch b.usbStatus { case "mounted", "usable": return "接続済み"; case "notMounted": return "未接続"; default: return b.usbStatus }
-    }
+    private var usbLabel: String { b.usbStatusLabel }
     private func maskedDestination(_ s: StreamDest) -> String {
         s.authentication.isEmpty || s.isRecording ? s.destination : "\(s.destination)/••••••"
     }

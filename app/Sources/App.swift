@@ -186,6 +186,8 @@ struct ThumbsView: View {
 
 struct ScenesView: View {
     @EnvironmentObject var m: MixerModel
+    /// 渡すとボタンにシーンの縮小表示を出す (本番画面)
+    var specs: [Int: SceneThumbsModel.Spec]? = nil
     private let cols = Array(repeating: GridItem(.flexible(), spacing: 6), count: 4)
 
     var body: some View {
@@ -198,10 +200,24 @@ struct ScenesView: View {
             LazyVGrid(columns: cols, spacing: 6) {
                 ForEach(1...8, id: \.self) { n in
                     Button { m.selectPreview(n) } label: {
-                        Text("\(n)").font(.title3.monospacedDigit().bold())
-                            .frame(maxWidth: .infinity, minHeight: 34)
-                            .background(RoundedRectangle(cornerRadius: 6).fill(fill(n)))
-                            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(border(n), lineWidth: 2))
+                        if let specs = specs {
+                            SceneThumbView(spec: specs[n], inputs: m.thumbs)
+                                .overlay(alignment: .topLeading) {
+                                    Text("\(n)").font(.caption.monospacedDigit().bold())
+                                        .frame(minWidth: 16).padding(.horizontal, 3)
+                                        .background(RoundedRectangle(cornerRadius: 3).fill(n == m.pgm || n == m.prv ? fill(n) : Color.black.opacity(0.6)))
+                                        .foregroundStyle(.white).padding(3)
+                                }
+                                .clipShape(RoundedRectangle(cornerRadius: 5))
+                                .overlay(RoundedRectangle(cornerRadius: 5)
+                                    .strokeBorder(n == m.pgm || n == m.prv ? border(n) : Color.primary.opacity(0.2), lineWidth: n == m.pgm || n == m.prv ? 3 : 1))
+                                .contentShape(Rectangle())
+                        } else {
+                            Text("\(n)").font(.title3.monospacedDigit().bold())
+                                .frame(maxWidth: .infinity, minHeight: 34)
+                                .background(RoundedRectangle(cornerRadius: 6).fill(fill(n)))
+                                .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(border(n), lineWidth: 2))
+                        }
                     }
                     .buttonStyle(.plain)
                     .disabled(n == m.pgm || m.transitioning)
@@ -243,25 +259,30 @@ struct AudioSection: View {
         VStack(alignment: .leading, spacing: 6) {
             Text(title).font(.subheadline.bold())
             ForEach(channels) { ch in
+                // AFV 中は本体の isMute が true になるが、実際は PGM に乗るので「ミュート」とは表示しない
+                let afvOn = kind == .input && m.afv[ch.id] == true
+                let muted = ch.isMute && !afvOn
                 VStack(spacing: 2) {
                     HStack(spacing: 8) {
                         Button { m.toggleMute(kind, ch.id) } label: {
-                            Image(systemName: ch.isMute ? "speaker.slash.fill" : "speaker.wave.2.fill")
-                                .foregroundStyle(ch.isMute ? .red : .primary).frame(width: 18)
+                            Image(systemName: muted ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                                .foregroundStyle(muted ? .red : .primary).frame(width: 18)
                         }
-                        .buttonStyle(.borderless).help(ch.isMute ? "ミュート解除" : "ミュート")
+                        .buttonStyle(.borderless)
+                        .help(afvOn ? "AFV 中です。押すとミュートになり、AFV は切れます" : muted ? "ミュート解除" : "ミュート")
                         Text(shortName(ch.name)).font(.caption).frame(width: 64, alignment: .leading)
+                            .overlay(alignment: .trailing) { afvButton(ch) }
                         Slider(value: Binding(get: { ch.gain },
                                               set: { m.setGain(kind, ch.id, snap($0, ch)) }),
                                in: ch.minDB...ch.maxDB)
                             .controlSize(.small)
-                            .opacity(ch.isMute ? 0.45 : 1)
+                            .opacity(muted ? 0.45 : 1)
                         Text(String(format: "%+.1f", ch.gain)).font(.caption.monospacedDigit()).frame(width: 40, alignment: .trailing)
                     }
                     if let lv = levels.level["\(kind.rawValue)-\(ch.id)"] {
                         VStack(spacing: 1) {
-                            MeterBar(db: ch.isMute ? -80 : lv.l)
-                            MeterBar(db: ch.isMute ? -80 : lv.r)
+                            MeterBar(db: muted ? -80 : lv.l)
+                            MeterBar(db: muted ? -80 : lv.r)
                         }
                         .padding(.leading, 90).padding(.trailing, 48)
                     }
@@ -269,6 +290,25 @@ struct AudioSection: View {
                 .contextMenu { Button("0 dB に戻す") { m.setGain(kind, ch.id, 0) } }
             }
             if let note = note { Text(note).font(.caption2).foregroundStyle(.secondary) }
+        }
+    }
+
+    /// HDMI 入力だけに出す AFV (Audio Follows Video) の切り替え
+    @ViewBuilder private func afvButton(_ ch: AudioChannel) -> some View {
+        if kind == .input, let on = m.afv[ch.id] {
+            let silent = on && m.audibleOnPgm[ch.id] == false
+            Button { m.setAFV(ch.id, !on) } label: {
+                Text("AFV").font(.system(size: 9, weight: .bold))
+                    .padding(.horizontal, 3).padding(.vertical, 1)
+                    .background(RoundedRectangle(cornerRadius: 3).fill(on ? Color.accentColor : Color.clear))
+                    .overlay(RoundedRectangle(cornerRadius: 3).stroke(on ? Color.clear : Color.secondary.opacity(0.6)))
+                    .foregroundStyle(on ? Color.white : Color.secondary)
+                    .opacity(silent ? 0.5 : 1)
+            }
+            .buttonStyle(.plain)
+            .help(on ? (silent ? "AFV オン: この入力の映像が PGM に無いので、今は音が PGM に乗っていません"
+                               : "AFV オン: この入力の映像が PGM に映っているときだけ音を PGM に乗せます")
+                     : "AFV オフ: どのシーンでも音を PGM に乗せます。押すと、映像が PGM に映っているときだけ鳴らします")
         }
     }
 

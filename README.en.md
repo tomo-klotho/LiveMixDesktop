@@ -75,7 +75,7 @@ After launching, log in with the device's administrator account. The factory def
 
 ## Limitations
 
-- The device can enable only one Program destination (RTMP 2, RTMP 3, RTSP 5, USB recording) at a time.
+- The device can enable only one destination that sends the Program (RTMP 2, RTMP 3, RTSP 5) at a time. USB recording can be enabled separately and has been confirmed to run together with RTMP streaming or RTSP.
   As a result, the high-quality (RTSP) monitor cannot be used while streaming to YouTube or elsewhere.
 - The iPad Stream monitor works only when the device's iPad Stream destination is this Mac's IP address (192.168.254.2 when connected directly to the device).
   While it is shown, the iPad app's screen (channel 3) is switched to a full-screen Program view and switched back when you close it.
@@ -89,9 +89,6 @@ The following features are implemented but have not yet been tried on a real dev
 Do not use them if the device holds important settings or data.
 
 - Factory reset (the current settings are exported automatically first)
-- The device's USB recording and formatting the USB storage
-- Streaming to RTMP 3
-- Whether streaming and USB recording can run at the same time
 - The iPad Stream monitor while a live stream is running
 
 ## What is stored on the Mac

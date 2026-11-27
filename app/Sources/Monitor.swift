@@ -104,7 +104,7 @@ final class MonitorController: ObservableObject {
             }
             let streams = try await streamStates()
             let toDisable = streams.filter { $0.value && $0.key != Self.ipadStreamId && $0.key != Self.rtspId }.map(\.key).sorted()
-            try saveRestore(toDisable)
+            try saveRestore(toDisable, rtspWasEnabled: streams[Self.rtspId] == true)
             log("monitor start: disable \(toDisable)")
             for id in toDisable { try await patchStream(id, enabled: false) }
             try await patchStream(Self.rtspId, enabled: true)
@@ -163,7 +163,9 @@ final class MonitorController: ObservableObject {
                 try? await api.call("POST", "/streamer/stop")
             }
             try await waitStopped()
-            try await patchStreamRetry(Self.rtspId, enabled: false)
+            if saved["rtspWasEnabled"] as? Bool != true {   // 元から有効だった RTSP 5 は無効にしない
+                try await patchStreamRetry(Self.rtspId, enabled: false)
+            }
             for id in disabled { try await patchStreamRetry(id, enabled: true) }
             try? FileManager.default.removeItem(at: Self.restoreFile)
             owned = false
@@ -279,7 +281,14 @@ final class MonitorController: ObservableObject {
                 guard let self = self, self.state == .running, self.ffmpeg === proc else { return }
                 self.log("ffmpeg exited \(proc.terminationStatus)")
                 if self.attached { self.attached = false }
-                if self.usingIPad { self.usingIPad = false; Task { await self.restoreIPadChannel() } }
+                if self.usingIPad {
+                    self.usingIPad = false
+                    Task { await self.restoreIPadChannel() }
+                    self.state = .failed(self.frame == nil
+                        ? "iPad Stream の映像が届きません。本体が今は iPad Stream を送っていないようです (送り始める条件は分かっていません)。高画質 (RTSP) に切り替えてください"
+                        : "iPad Stream の映像が止まりました")
+                    return
+                }
                 self.state = .failed("映像の受信が止まりました (ffmpeg 終了コード \(proc.terminationStatus))")
             }
         }
@@ -358,6 +367,9 @@ final class MonitorController: ObservableObject {
                 try await api.call("PATCH", "/channels/\(Self.ipadChannel)", ["sceneId": Self.pgmFullScene, "sender": "livemixdesktop"])
                 log("monitor (ipad): channel \(Self.ipadChannel) scene \(cur) -> \(Self.pgmFullScene)")
             }
+            // 本体は iPad Stream を常に送るとは限らない。送り先を一度別の値に変えて戻すと送り始める (2026-11-27 実機確認)。
+            // 同じ値を送り直すだけでは始まらない
+            try await kickIPadStream(dest: dest, host: host, port: port)
             usingIPad = true
             launchFFmpeg(ff, input: ["-protocol_whitelist", "file,udp,rtp", "-fflags", "nobuffer", "-flags", "low_delay", "-i", sdpURL.path])
             if state == .starting { state = .running }
@@ -368,6 +380,28 @@ final class MonitorController: ObservableObject {
             await restoreIPadChannel()
             state = .failed(describe(error))
         }
+    }
+
+    /// iPad Stream の送り先のポートを一時的に変えて、すぐ元に戻す (本体に送信を始めさせるため)
+    private func kickIPadStream(dest: String, host: String, port: Int) async throws {
+        // 本体は送り先の変更に 3〜4 秒かかる (通常の 3 秒のタイムアウトでは足りない)
+        let tmp = "rtp://\(host):\(port + 2)"
+        var firstError: Error?
+        do { try await api.call("PATCH", "/streams/\(Self.ipadStreamId)", ["destination": tmp, "sender": "livemixdesktop"], timeout: 15) }
+        catch { firstError = error }   // 途中で切れても本体側は変わっていることがあるので、必ず戻す処理へ進む
+        for _ in 0..<5 {
+            do {
+                try await api.call("PATCH", "/streams/\(Self.ipadStreamId)", ["destination": dest, "sender": "livemixdesktop"], timeout: 15)
+                if let d = try await api.call("GET", "/streams/\(Self.ipadStreamId)", timeout: 10) as? [String: Any],
+                   d["destination"] as? String == dest {
+                    log("monitor (ipad): kicked stream (\(tmp) -> \(dest))\(firstError.map { " first PATCH error: \($0)" } ?? "")")
+                    return
+                }
+            } catch { firstError = error }
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+        }
+        log("monitor (ipad): FAILED to restore destination \(dest)")
+        throw MonitorError("iPad Stream の送り先を元 (\(dest)) に戻せませんでした。本体の配信設定を確認してください")
     }
 
     /// チャンネル3 を控えておいたシーンに戻す。今もシーン15 のときだけ戻す (その間に誰かが変えていたら尊重する)
@@ -447,15 +481,19 @@ final class MonitorController: ObservableObject {
         throw MonitorError("配信エンジンの停止を確認できません")
     }
 
-    private func saveRestore(_ disabled: [Int]) throws {
+    /// rtspWasEnabled: モニターを始める前から RTSP 5 が有効だったか (なら、止めたときも有効のまま残す)
+    private func saveRestore(_ disabled: [Int], rtspWasEnabled: Bool) throws {
         // 念のため、既存の記録があれば和集合にして、戻す対象を絶対に減らさない
         var all = Set(disabled)
+        var rtspWas = rtspWasEnabled
         if let d = try? Data(contentsOf: Self.restoreFile),
-           let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any], let old = o["disabled"] as? [Int] {
-            all.formUnion(old)
+           let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] {
+            if let old = o["disabled"] as? [Int] { all.formUnion(old) }
+            if let w = o["rtspWasEnabled"] as? Bool { rtspWas = w }   // 古い記録のほうが本来の状態
         }
         let disabled = all.sorted()
-        let data = try JSONSerialization.data(withJSONObject: ["disabled": disabled, "at": ISO8601DateFormatter().string(from: Date())])
+        let data = try JSONSerialization.data(withJSONObject: ["disabled": disabled, "rtspWasEnabled": rtspWas,
+                                                              "at": ISO8601DateFormatter().string(from: Date())])
         try AppFiles.write(data, to: Self.restoreFile)
     }
 
